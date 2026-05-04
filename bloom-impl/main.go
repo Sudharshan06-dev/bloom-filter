@@ -2,22 +2,15 @@ package main
 
 import (
 	"fmt"
-	"hash"
-	"math/rand"
 
 	"github.com/google/uuid"
 	"github.com/twmb/murmur3"
 )
 
-var hashFns []hash.Hash32
+var hashFns murmur3.Hash128
 
 func init() {
-
-	hashFns = make([]hash.Hash32, 0)
-
-	for i := 0; i < 100; i++ {
-		hashFns = append(hashFns, murmur3.SeedNew32(uint32(rand.Uint32())))
-	}
+	hashFns = murmur3.New128()
 }
 
 type BloomFilter struct {
@@ -26,12 +19,12 @@ type BloomFilter struct {
 }
 
 // Utility function to create the hash method -> Currently returns integer -> Check for the correct return type
-func mumurhash(key string, size int32, currentHashFn hash.Hash32) int {
+func mumurhash(key string) (uint64, uint64) {
 	//Use that hashFn to generate the murmur hash corresponding to the seed values of that particular hashFn
-	currentHashFn.Write([]byte(key))
-	result := currentHashFn.Sum32() % uint32(size)
-	currentHashFn.Reset()
-	return int(result)
+	hashFns.Reset()
+	hashFns.Write([]byte(key))
+	h1, h2 := hashFns.Sum128()
+	return h1, h2
 }
 
 // Create bloom filter with size
@@ -45,25 +38,32 @@ func NewBloomFilter(size int32) *BloomFilter {
 // Create the add function to add in the new string
 func (b *BloomFilter) Add(key string, hashFnToConsider int) {
 
+	lower_bits, upper_bits := mumurhash(key) //Divided 128 bit to 64 and 64 bits -> double hashing
+
 	for fnIdx := 0; fnIdx < hashFnToConsider; fnIdx++ {
-		idx := mumurhash(key, b.size, hashFns[fnIdx])
-		aIdx := idx / 8
-		bIdx := idx % 8
-		b.filter[aIdx] |= 1 << bIdx
+		bitIndex := (lower_bits + uint64(fnIdx)*upper_bits) % uint64(b.size)
+		byteIndex := bitIndex / 8
+		bitOffset := bitIndex % 8
+		b.filter[byteIndex] |= 1 << bitOffset
 	}
 }
 
 // Take in the key and get the index by hashing the key to check whether the index exsists or not
 func (b *BloomFilter) Exists(key string, hashFnToConsider int) bool {
 
+	lower_bits, upper_bits := mumurhash(key) //Divided 128 bit to 64 and 64 bits -> double hashing
+
 	for fnIdx := 0; fnIdx < hashFnToConsider; fnIdx++ {
-		idx := mumurhash(key, b.size, hashFns[fnIdx])
-		aIdx := idx / 8
-		bIdx := idx % 8
+
+		bitIndex := (lower_bits + uint64(fnIdx)*upper_bits) % uint64(b.size)
 
 		//Fail fast method if the key is false then return the false value immediately -> only when the key is true for all the hash fn we return true
 		//This will help us to reduce the collisions at first, and once the hashfn increases we will encounter increase in the false positives rates
-		currentKeyExists := b.filter[aIdx]&(1<<bIdx) > 0
+
+		byteIndex := bitIndex / 8
+		bitOffset := bitIndex % 8
+
+		currentKeyExists := b.filter[byteIndex]&(1<<bitOffset) > 0
 
 		if !currentKeyExists {
 			return false
@@ -83,7 +83,7 @@ func main() {
 		dataset = append(dataset, uuid.New().String())
 	}
 
-	for idx := 1; idx < len(hashFns); idx++ {
+	for idx := 1; idx < 100; idx++ {
 
 		newBloomFilter := NewBloomFilter(int32(10000))
 
